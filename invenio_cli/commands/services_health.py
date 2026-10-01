@@ -16,7 +16,11 @@
 
 import time
 
-from ..helpers.process import run_cmd
+import yaml
+from docker_services_cli.services import rustfs_create_default_bucket
+
+from ..helpers.env import env
+from ..helpers.process import ProcessResponse, run_cmd
 
 
 class ServicesHealthCommands(object):
@@ -96,6 +100,64 @@ class ServicesHealthCommands(object):
         )
 
     @classmethod
+    def s3_healthcheck(cls, *args, **kwargs):
+        """Initialize a Compose-managed RustFS bucket for browser uploads."""
+        response = run_cmd(
+            ["docker", "compose", "--file", kwargs["filepath"], "config"]
+        )
+        if response.status_code != 0:
+            return response
+
+        config = yaml.safe_load(response.output) or {}
+        service = config.get("services", {}).get("s3", {})
+        image = service.get("image", "").split("@")[0].split(":")[0]
+        if image != "rustfs/rustfs":
+            # External S3 and legacy MinIO setups are not managed here.
+            return ProcessResponse()
+
+        port = next(
+            (
+                port
+                for port in service.get("ports", [])
+                if port.get("target") == 9000 and port.get("published")
+            ),
+            None,
+        )
+        if port is None:
+            return ProcessResponse(
+                error="RustFS must publish its S3 API port for local setup.",
+                status_code=1,
+            )
+        host = port.get("host_ip", "127.0.0.1")
+        if host in ("0.0.0.0", "::"):
+            host = "127.0.0.1"
+        if ":" in host:
+            host = f"[{host}]"
+        endpoint = f"http://{host}:{port['published']}"
+        response = run_cmd(["curl", "-f", f"{endpoint}/health"])
+        if response.status_code != 0:
+            return response
+
+        environment = service.get("environment", {})
+        access_key = environment.get("RUSTFS_ACCESS_KEY")
+        secret_key = environment.get("RUSTFS_SECRET_KEY")
+        if not access_key or not secret_key:
+            return ProcessResponse(
+                error="RustFS credentials must be configured in Compose.",
+                status_code=1,
+            )
+        with env(
+            S3_ENDPOINT_URL=endpoint,
+            S3_ACCESS_KEY_ID=access_key,
+            S3_SECRET_ACCESS_KEY=secret_key,
+        ):
+            ready = rustfs_create_default_bucket(verbose=kwargs["verbose"])
+        return ProcessResponse(
+            status_code=0 if ready else 1,
+            error=None if ready else "Could not initialize the RustFS default bucket.",
+        )
+
+    @classmethod
     def wait_for_service(
         cls,
         service,
@@ -154,6 +216,10 @@ class ServicesHealthCommands(object):
 
 
 HEALTHCHECKS = {
+    "s3": {
+        "func": ServicesHealthCommands.s3_healthcheck,
+        "initial_delay": 0,
+    },
     "search": {
         "func": ServicesHealthCommands.search_healthcheck,
         "initial_delay": 15,  # search cluster can be particularly slow to start

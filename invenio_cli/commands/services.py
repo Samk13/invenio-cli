@@ -41,6 +41,8 @@ class ServicesCommands(Commands):
             self.docker_helper.start_containers()
 
         services = ["redis", self.cli_config.get_db_type(), "search"]
+        if self.cli_config.get_file_storage().lower() == "s3":
+            services.append("s3")
         for service in services:
             ready = ServicesHealthCommands.wait_for_service(
                 service,

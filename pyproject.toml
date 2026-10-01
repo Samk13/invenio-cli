@@ -25,6 +25,7 @@ dependencies = [
   "click-default-group>=1.2.2",
   "cookiecutter>=2.0.0",
   "docker>=7.1.0",
+  "docker-services-cli[s3]>=0.12.4",
   "pipenv>=2024.0.3",
   "pipfile>=0.0.2",
   "pynpm>=0.3.0",
